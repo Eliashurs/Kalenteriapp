@@ -12,6 +12,9 @@ import {
   IconHourglassHigh, IconTrash 
 } from '@tabler/icons-react';
 
+// NextAuth tuonnit
+import { useSession } from "next-auth/react";
+
 // Tuodaan Firebase-asetukset
 import { db } from './firebase';
 import { 
@@ -34,6 +37,9 @@ interface Booking {
 }
 
 export default function BookingPage() {
+  // Tarkistetaan onko käyttäjä kirjautunut sisään
+  const { data: session } = useSession();
+
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [selectedDate, setSelectedDate] = useState<Date | null>(null);
   const [selectedTime, setSelectedTime] = useState<string | null>(null);
@@ -69,12 +75,16 @@ export default function BookingPage() {
     }
   };
 
-  // 3. POISTO FIREBASESTA
+  // 3. POISTO FIREBASESTA (Admin-toiminto)
   const deleteBooking = async (id: string) => {
-    try {
-      await deleteDoc(doc(db, 'bookings', id));
-    } catch (error) {
-      console.error("Virhe poistossa: ", error);
+    if (!session) return; // Varmistus, ettei poisto onnistu ilman sessiota
+    
+    if (confirm("Haluatko varmasti poistaa tämän varauksen?")) {
+      try {
+        await deleteDoc(doc(db, 'bookings', id));
+      } catch (error) {
+        console.error("Virhe poistossa: ", error);
+      }
     }
   };
 
@@ -94,13 +104,11 @@ export default function BookingPage() {
 
   const dayBookings = useMemo(() => getDayBookings(selectedDate), [selectedDate, bookings]);
 
-  // Helper: "HH:MM" -> minutes
   const toMin = (t: string): number => {
     const [h, m] = t.split(':').map(Number);
     return h * 60 + m;
   };
 
-  // Helper: minutes -> "HH:MM"
   const toTime = (m: number): string => {
     const h = Math.floor(m / 60).toString().padStart(2, '0');
     const min = (m % 60).toString().padStart(2, '0');
@@ -131,33 +139,44 @@ export default function BookingPage() {
     }
   };
 
-  // Build booking list with free-time gap separators
+  // Build booking list with Admin-suojaus
   const renderBookingsWithGaps = () => {
     const sorted = [...dayBookings].sort((a, b) => toMin(a.time) - toMin(b.time));
     const items: React.ReactNode[] = [];
 
     sorted.forEach((booking, index) => {
       items.push(
-        <Card key={booking.id} withBorder p="sm" bg="gray.0">
+        <Card key={booking.id} withBorder p="sm" bg={session ? "gray.0" : "blue.0"}>
           <Group justify="space-between">
             <Stack gap="xs">
               <Group gap="sm">
                 <Badge color="blue">
                   {booking.time} – {calculateEndTime(booking.time, booking.duration)}
                 </Badge>
-                <Text fw={500}>{booking.name}</Text>
+                {/* Jos admin, näytä nimi. Muuten näytä "Varattu" */}
+                <Text fw={500}>{session ? booking.name : "VARATTU"}</Text>
               </Group>
-              <Text size="sm" c="dimmed">{booking.duration} h</Text>
+              
+              {/* Näytetään lisätiedot vain adminille */}
+              {session && (
+                <Text size="sm" c="dimmed">
+                  Kesto: {booking.duration} h | {booking.email}
+                </Text>
+              )}
             </Stack>
-            <Button 
-              variant="subtle" 
-              color="red" 
-              size="xs" 
-              onClick={() => deleteBooking(booking.id)}
-              leftSection={<IconTrash size={14} />}
-            >
-              Poista
-            </Button>
+
+            {/* Poistonappi näkyy vain jos session on olemassa (admin) */}
+            {session && (
+              <Button 
+                variant="subtle" 
+                color="red" 
+                size="xs" 
+                onClick={() => deleteBooking(booking.id)}
+                leftSection={<IconTrash size={14} />}
+              >
+                Poista
+              </Button>
+            )}
           </Group>
         </Card>
       );
@@ -185,7 +204,7 @@ export default function BookingPage() {
   };
 
   return (
-    <Container size="md" py="xl">
+    <Container size="md" py="xl" pb={150}> {/* Lisätty tilaa alapalkille */}
       {submitted && (
         <Notification 
           icon={<IconCheck style={{ width: rem(20), height: rem(20) }} />} 
@@ -211,18 +230,20 @@ export default function BookingPage() {
               <IconCalendarStats size={20} color="blue" />
               <Text fw={700}>1. Valitse päivämäärä</Text>
             </Group>
-            <DatePicker 
-              value={selectedDate} 
-              onChange={(value) => {
-                if (typeof value === 'string') {
-                  setSelectedDate(new Date(value));
-                } else {
-                  setSelectedDate(value);
-                }
-              }} 
-              size="md"
-              minDate={new Date()}
-            />
+         <DatePicker 
+  value={selectedDate} 
+  onChange={(value: any) => {
+    // Jos value on Date-olio, asetetaan se. Jos null, nollataan.
+    if (value instanceof Date || value === null) {
+      setSelectedDate(value);
+    } else if (typeof value === 'string') {
+      // Jos se sattuisi tulemaan stringinä, muutetaan se Dateksi
+      setSelectedDate(new Date(value));
+    }
+  }} 
+  size="md"
+  minDate={new Date()}
+/>
           </Card>
 
           <Button
