@@ -1,20 +1,32 @@
-'use client';
+'use client'
 
 import { useState, useEffect, useMemo } from 'react';
+import { BsMusicNoteList } from "react-icons/bs";
 import { 
   Container, Title, Text, SimpleGrid, Card, Button, 
-  Stack, Divider, TextInput, Group, Notification, rem, Select, Box, Center, Badge 
+  Stack, Divider, TextInput, Group, Notification, rem, Box, Center, Badge 
 } from '@mantine/core';
 import { DatePicker } from '@mantine/dates';
 import { 
   IconCheck, IconCalendarStats, IconBuilding, IconClock, 
   IconHourglassHigh, IconTrash 
 } from '@tabler/icons-react';
-import { get } from 'http';
+
+// Tuodaan Firebase-asetukset
+import { db } from './firebase';
+import { 
+  collection, 
+  addDoc, 
+  deleteDoc, 
+  doc, 
+  onSnapshot, 
+  query, 
+  orderBy 
+} from 'firebase/firestore';
 
 interface Booking {
   id: string;
-  date: string; // ISO string
+  date: string;
   time: string;
   duration: string;
   name: string;
@@ -22,10 +34,7 @@ interface Booking {
 }
 
 export default function BookingPage() {
-  // Varaukset
   const [bookings, setBookings] = useState<Booking[]>([]);
-  
-  // Form state
   const [selectedDate, setSelectedDate] = useState<Date | null>(null);
   const [selectedTime, setSelectedTime] = useState<string | null>(null);
   const [duration, setDuration] = useState<string>('1');
@@ -35,37 +44,46 @@ export default function BookingPage() {
 
   const times = ['09:00', '10:00', '11:00', '12:00', '13:00', '14:00', '15:00', '16:00'];
 
-  // Lataa varaukset local storagesta
+  // 1. REAALIAIKAINEN LATAUS FIREBASESTA
   useEffect(() => {
-    const saved = localStorage.getItem('bookings');
-    if (saved) {
-      setBookings(JSON.parse(saved));
-    }
+    const q = query(collection(db, 'bookings'), orderBy('time', 'asc'));
+
+    const unsubscribe = onSnapshot(q, (querySnapshot) => {
+      const bookingsArray: Booking[] = [];
+      querySnapshot.forEach((doc) => {
+        bookingsArray.push({ id: doc.id, ...doc.data() } as Booking);
+      });
+      setBookings(bookingsArray);
+    });
+
+    return () => unsubscribe();
   }, []);
 
-  // Tallenna varaukset local storageen
-  const saveBooking = (newBooking: Booking) => {
-    const updated = [...bookings, newBooking];
-    setBookings(updated);
-    localStorage.setItem('bookings', JSON.stringify(updated));
+  // 2. TALLENNUS FIREBASEEN
+  const saveBooking = async (newBooking: Omit<Booking, 'id'>) => {
+    try {
+      await addDoc(collection(db, 'bookings'), newBooking);
+    } catch (error) {
+      console.error("Virhe tallennuksessa: ", error);
+      alert("Tallennus epäonnistui!");
+    }
   };
 
-  // Poista varaus
-  const deleteBooking = (id: string) => {
-    const updated = bookings.filter(b => b.id !== id);
-    setBookings(updated);
-    localStorage.setItem('bookings', JSON.stringify(updated));
+  // 3. POISTO FIREBASESTA
+  const deleteBooking = async (id: string) => {
+    try {
+      await deleteDoc(doc(db, 'bookings', id));
+    } catch (error) {
+      console.error("Virhe poistossa: ", error);
+    }
   };
 
-  // Hae päivän varaukset
   const getDayBookings = (date: Date | null): Booking[] => {
     if (!date) return [];
-    const d = date instanceof Date ? date : new Date(date);
-    const dateStr = d.toISOString().split('T')[0];
-    return bookings.filter(b => b.date === dateStr).sort((a, b) => a.time.localeCompare(b.time));
+    const dateStr = date.toISOString().split('T')[0];
+    return bookings.filter(b => b.date === dateStr);
   };
 
-  // Laske loppumisaika
   const calculateEndTime = (startTime: string, duration: string): string => {
     const [hours, minutes] = startTime.split(':').map(Number);
     const totalMinutes = hours * 60 + minutes + parseFloat(duration) * 60;
@@ -74,30 +92,96 @@ export default function BookingPage() {
     return `${endHours.toString().padStart(2, '0')}:${endMinutes.toString().padStart(2, '0')}`;
   };
 
-  const dayBookings = useMemo(() => getDayBookings(selectedDate), [selectedDate, bookings, getDayBookings]);
+  const dayBookings = useMemo(() => getDayBookings(selectedDate), [selectedDate, bookings]);
 
-  const handleConfirm = () => {
+  // Helper: "HH:MM" -> minutes
+  const toMin = (t: string): number => {
+    const [h, m] = t.split(':').map(Number);
+    return h * 60 + m;
+  };
+
+  // Helper: minutes -> "HH:MM"
+  const toTime = (m: number): string => {
+    const h = Math.floor(m / 60).toString().padStart(2, '0');
+    const min = (m % 60).toString().padStart(2, '0');
+    return `${h}:${min}`;
+  };
+
+  const handleConfirm = async () => {
     if (!selectedDate || !selectedTime || !name || !email) return;
 
-    const d = selectedDate instanceof Date ? selectedDate : new Date(selectedDate);
-    const newBooking: Booking = {
-      id: Date.now().toString(),
-      date: d.toISOString().split('T')[0],
+    const newBooking = {
+      date: selectedDate.toISOString().split('T')[0],
       time: selectedTime,
       duration: duration || '1',
       name,
       email,
     };
 
-    saveBooking(newBooking);
-    
-    // Tyhjennä form
-    setSelectedTime(null);
-    setDuration('1');
-    setName('');
-    setEmail('');
-    setSubmitted(true);
-    setTimeout(() => setSubmitted(false), 6000);
+    try {
+      await saveBooking(newBooking);
+      setSelectedTime(null);
+      setDuration('1');
+      setName('');
+      setEmail('');
+      setSubmitted(true);
+      setTimeout(() => setSubmitted(false), 6000);
+    } catch (err) {
+      console.error("Havaittu virhe handleConfirmissa:", err);
+    }
+  };
+
+  // Build booking list with free-time gap separators
+  const renderBookingsWithGaps = () => {
+    const sorted = [...dayBookings].sort((a, b) => toMin(a.time) - toMin(b.time));
+    const items: React.ReactNode[] = [];
+
+    sorted.forEach((booking, index) => {
+      items.push(
+        <Card key={booking.id} withBorder p="sm" bg="gray.0">
+          <Group justify="space-between">
+            <Stack gap="xs">
+              <Group gap="sm">
+                <Badge color="blue">
+                  {booking.time} – {calculateEndTime(booking.time, booking.duration)}
+                </Badge>
+                <Text fw={500}>{booking.name}</Text>
+              </Group>
+              <Text size="sm" c="dimmed">{booking.duration} h</Text>
+            </Stack>
+            <Button 
+              variant="subtle" 
+              color="red" 
+              size="xs" 
+              onClick={() => deleteBooking(booking.id)}
+              leftSection={<IconTrash size={14} />}
+            >
+              Poista
+            </Button>
+          </Group>
+        </Card>
+      );
+
+      if (index < sorted.length - 1) {
+        const currentEnd = toMin(booking.time) + Math.round(parseFloat(booking.duration) * 60);
+        const nextStart = toMin(sorted[index + 1].time);
+        const gapMin = nextStart - currentEnd;
+
+        if (gapMin > 0) {
+          items.push(
+            <Group key={`gap-${index}`} gap="xs" align="center" px="xs">
+              <Divider style={{ flex: 1 }} />
+              <Badge variant="light" color="green" size="sm">
+                Vapaa {toTime(currentEnd)}–{toTime(nextStart)} ({gapMin} min)
+              </Badge>
+              <Divider style={{ flex: 1 }} />
+            </Group>
+          );
+        }
+      }
+    });
+
+    return items;
   };
 
   return (
@@ -110,19 +194,17 @@ export default function BookingPage() {
           onClose={() => setSubmitted(false)}
           mb="xl"
         >
-          Varauksesi on vahvistettu. Tervetuloa!
+          Varauksesi on tallennettu pilveen ja näkyy nyt kaikille.
         </Notification>
       )}
 
       <Stack gap="xs" mb="xl" ta="center">
         <Title order={1} fw={800} c="orange" size="3rem">Viitasaari</Title>
-        <Title order={2} fw={700}>🎵 Soittotilan varaus 🎵</Title>
-        <Text c="dimmed">Valitse päivä, aloitusaika ja kesto.</Text>
+        <Title order={2} fw={700}> <BsMusicNoteList/> Bänditilan varaus </Title>
+        <Text c="dimmed">Varaukset tallentuvat reaaliajassa yhteiseen kalenteriin.</Text>
       </Stack>
 
       <SimpleGrid cols={{ base: 1, md: 2 }} spacing="xl">
-        
-        {/* 1. PÄIVÄMÄÄRÄ */}
         <Stack gap="md">
           <Card withBorder radius="md" p="lg" shadow="sm">
             <Group mb="md" gap="xs">
@@ -131,27 +213,15 @@ export default function BookingPage() {
             </Group>
             <DatePicker 
               value={selectedDate} 
-              onChange={(date) => setSelectedDate(date ? new Date(date) : null)} 
+              onChange={(value) => {
+                if (typeof value === 'string') {
+                  setSelectedDate(new Date(value));
+                } else {
+                  setSelectedDate(value);
+                }
+              }} 
               size="md"
               minDate={new Date()}
-              styles={{
-                calendarHeaderControlIcon: {
-                  width: rem(16),
-                  height: rem(16),
-                  minWidth: rem(16),
-                  minHeight: rem(16),
-                  maxWidth: rem(16),
-                  maxHeight: rem(16),
-                },
-                calendarHeaderControl: {
-                  '& svg': {
-                    width: rem(16),
-                    height: rem(16),
-                    minWidth: rem(16),
-                    minHeight: rem(16),
-                  },
-                },
-              }}
             />
           </Card>
 
@@ -166,7 +236,6 @@ export default function BookingPage() {
           </Button>
         </Stack>
 
-        {/* 2. AIKA JA KESTO */}
         <Stack gap="md">
           {selectedDate ? (
             <Card withBorder radius="md" p="lg" shadow="sm">
@@ -183,7 +252,6 @@ export default function BookingPage() {
                         variant={selectedTime === time ? "filled" : "light"}
                         onClick={() => setSelectedTime(time)}
                         size="sm"
-                        data-selected={selectedTime === time}
                       >
                         {time}
                       </Button>
@@ -198,7 +266,6 @@ export default function BookingPage() {
                   </Group>
                   <TextInput
                     type="number"
-                    placeholder="esim. 2.5"
                     value={duration}
                     onChange={(e) => setDuration(e.currentTarget.value)}
                     min={0.5}
@@ -210,34 +277,16 @@ export default function BookingPage() {
                 <Divider variant="dashed" />
 
                 <Stack gap="sm">
-                  <TextInput 
-                    label="Nimi" 
-                    placeholder="Oma nimesi" 
-                    required 
-                    value={name}
-                    onChange={(e) => setName(e.currentTarget.value)}
-                  />
-                  <TextInput 
-                    label="Sähköposti" 
-                    placeholder="matti@esimerkki.fi" 
-                    required 
-                    value={email}
-                    onChange={(e) => setEmail(e.currentTarget.value)}
-                  />
+                  <TextInput label="Nimi" placeholder="Oma nimesi" required value={name} onChange={(e) => setName(e.currentTarget.value)} />
+                  <TextInput label="Sähköposti" placeholder="matti@esimerkki.fi" required value={email} onChange={(e) => setEmail(e.currentTarget.value)} />
                   
                   <Box bg="blue.0" p="md" style={{ borderRadius: rem(8) }} mt="sm">
                     <Text size="xs" c="blue.9" fw={700} tt="uppercase">Yhteenveto</Text>
-                    <Text size="sm"><b>Päivä:</b> {selectedDate instanceof Date ? selectedDate.toLocaleDateString('fi-FI') : ''}</Text>
-                    <Text size="sm"><b>Aika:</b> {selectedTime || '--:--'} - {selectedTime && duration ? calculateEndTime(selectedTime, duration) : '--:--'} ({duration || '0'} h)</Text>
+                    <Text size="sm"><b>Päivä:</b> {selectedDate.toLocaleDateString('fi-FI')}</Text>
+                    <Text size="sm"><b>Aika:</b> {selectedTime || '--:--'} - {selectedTime && duration ? calculateEndTime(selectedTime, duration) : '--:--'}</Text>
                   </Box>
 
-                  <Button 
-                    color="blue" 
-                    fullWidth 
-                    size="lg" 
-                    disabled={!selectedTime || !name || !email}
-                    onClick={handleConfirm}
-                  >
+                  <Button color="blue" fullWidth size="lg" disabled={!selectedTime || !name || !email} onClick={handleConfirm}>
                     Vahvista varaus
                   </Button>
                 </Stack>
@@ -245,40 +294,15 @@ export default function BookingPage() {
                 {dayBookings.length > 0 && (
                   <Stack gap="md" mt="xl">
                     <Divider />
-                    <Text fw={700}>Tämän päivän varaukset ({dayBookings.length})</Text>
-                    <Stack gap="sm">
-                      {dayBookings.map((booking) => (
-                        <Card key={booking.id} withBorder p="sm" bg="gray.0">
-                          <Group justify="space-between">
-                            <Stack gap="xs">
-                              <Group gap="sm">
-                                <Badge color="blue">{booking.time} - {calculateEndTime(booking.time, booking.duration)}</Badge>
-                                <Text fw={500}>{booking.name}</Text>
-                              </Group>
-                              <Text size="sm" c="dimmed">
-                                {booking.duration} h - {booking.email}
-                              </Text>
-                            </Stack>
-                            <Button
-                              variant="light"
-                              color="red"
-                              size="sm"
-                              onClick={() => deleteBooking(booking.id)}
-                              leftSection={<IconTrash size={16} />}
-                            >
-                              Poista
-                            </Button>
-                          </Group>
-                        </Card>
-                      ))}
-                    </Stack>
+                    <Text fw={700}>Päivän varaukset ({dayBookings.length})</Text>
+                    {renderBookingsWithGaps()}
                   </Stack>
                 )}
               </Stack>
             </Card>
           ) : (
-            <Center>
-              <Text c="dimmed">Valitse päivämäärä nähdäksesi varausvaihtoehdot</Text>
+            <Center h={200}>
+              <Text c="dimmed">Valitse päivämäärä aloittaaksesi</Text>
             </Center>
           )}
         </Stack>
