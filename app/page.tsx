@@ -232,7 +232,7 @@ export default function BookingPage() {
             onClick={() => window.open('https://viitasaari.fi/kulttuuri-ja-vapaa-aika/kulttuuripalvelut/kulttuuritalokartano/', '_blank')}
             fullWidth
           >
-            Lisätietoa Kulttuurikartanosta
+            Lisätietoa Kulttuuritalo Kartanosta
           </Button>
         </Stack>
 
