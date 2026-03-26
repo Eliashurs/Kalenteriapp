@@ -63,13 +63,13 @@ export default function SignInPage() {
         <form onSubmit={form.onSubmit(handleSubmit)}>
           <TextInput 
             label="Käyttäjätunnus" 
-            placeholder="admin" 
+            placeholder="Kirjoita käyttäjätunnus" 
             required 
             {...form.getInputProps('username')} 
           />
           <PasswordInput 
             label="Salasana" 
-            placeholder="viitasaari123" 
+            placeholder="Kirjoita salasana" 
             required 
             mt="md" 
             {...form.getInputProps('password')} 
